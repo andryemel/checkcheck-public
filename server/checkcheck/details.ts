@@ -60,7 +60,8 @@ export function parseDetailsAnswer(text: string): ParsedDetails {
   if (email) details.email = email.toLowerCase();
   const withoutEmail = email ? note.replace(email, ' ') : note;
   const url = URL_RE.exec(withoutEmail)?.[0];
-  if (url && !/^(?:e\.g|i\.e|etc)\./i.test(url)) details.website = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  const numeric = !!url && /^(?:https?:\/\/)?[\d.]+(?:[:\/]|$)/i.test(url);
+  if (url && !numeric && !/^(?:e\.g|i\.e|etc)\./i.test(url)) details.website = /^https?:\/\//i.test(url) ? url : `https://${url}`;
   const company = COMPANY_RE.exec(withoutEmail)?.[1];
   if (company) details.company = company.replace(/[.,;]+$/, '').trim();
   const location = LOCATION_RE.exec(withoutEmail)?.[1];

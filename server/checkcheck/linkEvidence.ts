@@ -13,6 +13,7 @@
  *
  * Nothing here trusts the model: every URL is checked live, bounded and timed.
  */
+import { fetchPublic } from './netGuard';
 import { resolveRedirect } from './grounding';
 import { CHECKCHECK_USER_AGENT } from './records/rdap';
 import { PROFILE_HOSTS } from './validateBriefing';
@@ -114,7 +115,10 @@ export async function fetchText(url: string, fetchImpl: typeof fetch): Promise<{
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PAGE_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(url, { method: 'GET', redirect: 'follow', signal: controller.signal, headers: { 'user-agent': CHECKCHECK_USER_AGENT, accept: 'text/html' } });
+    const init = { method: 'GET', signal: controller.signal, headers: { 'user-agent': CHECKCHECK_USER_AGENT, accept: 'text/html' } };
+    // On the real network the address must lead to the public internet at every hop (netGuard.ts); an injected fetch is a test double.
+    const response = fetchImpl === fetch ? await fetchPublic(url, init) : await fetchImpl(url, { ...init, redirect: 'follow' });
+    if (!response) return null;
     return { status: response.status, body: response.ok ? (await response.text()).slice(0, 20000) : '' };
   } catch {
     return null;

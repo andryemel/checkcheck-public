@@ -6,6 +6,7 @@
  * fetched by the app and handed to the model as a provided record, so the current
  * figures are in front of it before any search. Self-published: the note says so.
  */
+import { fetchPublic } from '../netGuard';
 import { CHECKCHECK_USER_AGENT } from './rdap';
 import type { ProvidedRecord, RecordCoverage } from '../types';
 
@@ -39,7 +40,10 @@ export async function fetchWebsiteRecord(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const response = await fetchImpl(url, { method: 'GET', redirect: 'follow', signal: controller.signal, headers: { 'user-agent': CHECKCHECK_USER_AGENT, accept: 'text/html' } });
+    const init = { method: 'GET', signal: controller.signal, headers: { 'user-agent': CHECKCHECK_USER_AGENT, accept: 'text/html' } };
+    // On the real network the address must lead to the public internet at every hop (netGuard.ts); an injected fetch is a test double.
+    const response = fetchImpl === fetch ? await fetchPublic(url, init) : await fetchImpl(url, { ...init, redirect: 'follow' });
+    if (!response) return { record: null, coverage: { source: 'website', state: 'source_unavailable', detail: 'The website address does not lead to a public website, so it was not read.' } };
     if (!response.ok) return { record: null, coverage: { source: 'website', state: 'source_unavailable', detail: `The website answered ${response.status}, so its own text was not provided.` } };
     const { title, text } = homepageText((await response.text()).slice(0, 400000), MAX_TEXT);
     if (text.length < 80) return { record: null, coverage: { source: 'website', state: 'source_unavailable', detail: 'The website returned no readable text (a script-only page), so its own text was not provided.' } };
