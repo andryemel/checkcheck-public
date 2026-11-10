@@ -162,3 +162,11 @@ The research prompt in this repository is an adaptation written for this demo. J
 ## Licence
 
 The code is released under the [MIT licence](LICENSE). The Jinna and CheckCheck names, the Jinna logo and the sphere artwork are trademarks and brand assets of Jinna; the licence does not grant rights to them. See [NOTICE](NOTICE.md) for third-party software and services.
+
+## Usage statistics (private)
+
+The server keeps counters only: page views, distinct visitors per day, checks started and finished, clarifying questions, refusals, limit hits, shares, shared-report opens and spend. No names, requests or IP addresses are stored, and the numbers are not served over HTTP. The operator reads them from the store:
+
+```bash
+STORE_DRIVER=redis npx tsx --env-file=.env.local scripts/stats.ts 14
+```

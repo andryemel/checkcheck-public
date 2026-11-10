@@ -15,6 +15,7 @@ import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { getStore } from './store';
 import { admit, config, settle } from './limits';
+import { bump, countVisit } from './stats';
 import { REFUSAL_COPY, screenPurpose } from './checkcheck/purposeScreen';
 import { extractRequest } from './checkcheck/extract';
 import { buildDetailsQuestion, classifyDetailsAnswer, needsDetailsQuestion, parseDetailsAnswer, CHECK_DECLINED_LINE } from './checkcheck/details';
@@ -51,6 +52,12 @@ app.use((_req, res, next) => {
 app.get('/api/config', (_req, res) => {
   const limits = runLimits();
   res.json({ model: MODEL, search: `Exa, up to ${limits.maxSearches} searches`, max_request_chars: config.maxRequestChars, checks_per_hour: config.checksPerIpPerHour() });
+});
+
+/** One page view of the landing page. Counted, never logged: see stats.ts. */
+app.post('/api/visit', (req: Request, res: Response) => {
+  void countVisit(getStore(), clientIp(req));
+  res.status(204).end();
 });
 
 function clientIp(req: Request): string {
@@ -94,18 +101,21 @@ app.post('/api/check', async (req: Request, res: Response) => {
     const screen = screenPurpose(text);
     if (screen.refused && screen.reason) {
       send('refused', { reason: screen.reason, message: REFUSAL_COPY[screen.reason] });
+      await bump(store, 'refused_purpose');
       return end();
     }
     // An answer to "Which X?" that calls the check off.
     const answered = answer ? classifyDetailsAnswer(answer) : null;
     if (answered?.kind === 'declined') {
       send('declined', { message: CHECK_DECLINED_LINE });
+      await bump(store, 'declined');
       return end();
     }
     // 2. Limits, before anything is spent.
     const admission = await admit(store, clientIp(req));
     if (!admission.ok) {
       send('limit', { code: admission.code, message: admission.message });
+      await bump(store, 'limit_hit');
       return end();
     }
     reserved = admission.reservedMicro;
@@ -117,6 +127,7 @@ app.post('/api/check', async (req: Request, res: Response) => {
     if (extracted.usage) lines.push({ step: 'extraction', cost_usd: extracted.usage.costUsd, prompt_tokens: extracted.usage.promptTokens, output_tokens: extracted.usage.outputTokens, reasoning_tokens: extracted.usage.reasoningTokens, searches: extracted.usage.searches, ms: extracted.usage.ms });
     if (!extracted.subject) {
       send('clarify', { kind: 'subject', question: extracted.problem, cost: { ...totalCost(lines), lines } });
+      await bump(store, 'clarify_before_research');
       return end();
     }
     let subject: CheckSubjectInput = extracted.subject;
@@ -133,11 +144,13 @@ app.post('/api/check', async (req: Request, res: Response) => {
     // 4. A person named with no anchor at all: one question before any research ("just run it" proceeds).
     if (!answer && needsDetailsQuestion(subject, null)) {
       send('clarify', { kind: 'details', name: subject.name, question: buildDetailsQuestion(subject.name).replace(' or email address', ', profile link or email address'), cost: { ...totalCost(lines), lines } });
+      await bump(store, 'clarify_before_research');
       return end();
     }
 
     // 5. The check.
     const runId = newRunId();
+    await Promise.all([bump(store, 'checks_started'), bump(store, subject.type === 'person' ? 'subject_person' : 'subject_company')]);
     const run = await runCheck({
       runId,
       subject: prepareSubject(subject),
@@ -150,11 +163,13 @@ app.post('/api/check', async (req: Request, res: Response) => {
     lines.push(...run.cost.lines);
     // Kept privately for a day so the visitor can choose to share it; never listed, never indexed.
     if (run.status === 'complete' || run.status === 'partial') await store.setJson(`run:${runId}`, run, config.runTtlSeconds).catch((err) => console.error(`[store] run save failed: ${err instanceof Error ? err.message : err}`));
+    await bump(store, run.status === 'complete' ? 'checks_completed' : run.status === 'partial' ? 'checks_partial' : run.status === 'needs_clarification' ? 'clarify_from_research' : 'checks_failed');
     send('result', { run: forVisitor(run) });
     return end();
   } catch (err: unknown) {
     const kind = err instanceof OpenRouterError ? err.kind : 'server';
     console.error(`[check] failed kind=${kind} ${err instanceof Error ? err.message.slice(0, 200) : ''}`);
+    await bump(store, 'errors');
     send('error', {
       message:
         kind === 'credits' ? 'This demo has run out of research credit for now. Please come back later.'
@@ -168,6 +183,7 @@ app.post('/api/check', async (req: Request, res: Response) => {
       const total = totalCost(lines);
       // No model call was made (lines empty) → nothing was spent; otherwise the reported cost replaces the reservation.
       await settle(store, reserved, lines.length === 0 ? 0 : total.total_usd, lines.length === 0 ? true : total.complete).catch(() => undefined);
+      if (total.total_usd) await bump(store, 'spend_micro_usd', Math.round(total.total_usd * 1e6));
     }
   }
 });
@@ -198,6 +214,7 @@ app.post('/api/share', async (req: Request, res: Response) => {
     if (!shared) return res.status(409).json({ error: 'Only a finished report can be shared.' });
     await store.setJson(`share:${shareId}`, shared, config.shareTtlSeconds());
     await store.setJson(`run:${runId}`, { ...run, share_id: shareId }, config.runTtlSeconds);
+    await bump(store, 'shares_created');
     return res.json({ id: shareId, url: `${baseUrl(req)}/r/${shareId}` });
   } catch (err: unknown) {
     console.error(`[share] failed: ${err instanceof Error ? err.message : err}`);
@@ -213,6 +230,7 @@ app.get('/api/shared/:id', async (req: Request, res: Response) => {
   try {
     const shared = await getStore().getJson<SharedReport>(`share:${id}`);
     if (!shared) return res.status(404).json({ error: 'This report was not found or its link has expired.' });
+    void bump(getStore(), 'share_opens');
     return res.json({ report: shared });
   } catch {
     return res.status(500).json({ error: 'The report could not be loaded.' });

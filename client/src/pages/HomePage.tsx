@@ -63,6 +63,16 @@ export default function HomePage() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
   useEffect(() => {
+    // One page view per browser tab, for the private usage count (a number only; nothing about the visitor is stored).
+    try {
+      if (sessionStorage.getItem('cc-visit')) return;
+      sessionStorage.setItem('cc-visit', '1');
+    } catch {
+      /* private mode: count the view anyway */
+    }
+    void fetch('/api/visit', { method: 'POST', keepalive: true }).catch(() => undefined);
+  }, []);
+  useEffect(() => {
     if (view.kind === 'clarify') answerRef.current?.focus();
   }, [view.kind]);
 
