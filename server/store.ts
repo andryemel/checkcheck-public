@@ -20,6 +20,10 @@ export interface Store {
   setJson(key: string, value: unknown, ttlSeconds?: number): Promise<void>;
   /** Atomically add `by` (may be negative) and return the new value. A new key expires after `ttlSeconds`. */
   incrBy(key: string, by: number, ttlSeconds: number): Promise<number>;
+  /** Put an entry at the head of a list, keep at most `maxLength` entries, and let the list expire after `ttlSeconds` without writes. */
+  pushLog(key: string, value: unknown, maxLength: number, ttlSeconds: number): Promise<void>;
+  /** The newest `count` entries of a list, newest first. */
+  readLog<T>(key: string, count: number): Promise<T[]>;
 }
 
 const safeName = (key: string): string => createHash('sha256').update(key).digest('hex').slice(0, 40);
@@ -65,6 +69,17 @@ class FileStore implements Store {
     this.queue = next.catch(() => undefined);
     return next;
   }
+  pushLog(key: string, value: unknown, maxLength: number, ttlSeconds: number): Promise<void> {
+    const next = this.queue.then(async () => {
+      const current = (await this.read<unknown[]>(key))?.value ?? [];
+      await this.write(key, [value, ...current].slice(0, maxLength), Date.now() + ttlSeconds * 1000);
+    });
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
+  async readLog<T>(key: string, count: number): Promise<T[]> {
+    return (((await this.read<T[]>(key))?.value ?? []) as T[]).slice(0, count);
+  }
 }
 
 class RedisRestStore implements Store {
@@ -100,6 +115,19 @@ class RedisRestStore implements Store {
     // NX: only a key without an expiry gets one, so the window is set once by whoever created it.
     await this.command(['EXPIRE', key, ttlSeconds, 'NX']).catch(() => undefined);
     return Number(value);
+  }
+  async pushLog(key: string, value: unknown, maxLength: number, ttlSeconds: number): Promise<void> {
+    await this.command(['LPUSH', key, JSON.stringify(value)]);
+    await this.command(['LTRIM', key, 0, maxLength - 1]).catch(() => undefined);
+    await this.command(['EXPIRE', key, ttlSeconds]).catch(() => undefined);
+  }
+  async readLog<T>(key: string, count: number): Promise<T[]> {
+    const raw = await this.command<string[]>(['LRANGE', key, 0, Math.max(0, count - 1)]);
+    const out: T[] = [];
+    for (const item of raw ?? []) {
+      try { out.push(JSON.parse(item) as T); } catch { /* skip an unreadable entry */ }
+    }
+    return out;
   }
 }
 

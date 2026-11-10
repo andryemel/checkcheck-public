@@ -163,10 +163,18 @@ The research prompt in this repository is an adaptation written for this demo. J
 
 The code is released under the [MIT licence](LICENSE). The Jinna and CheckCheck names, the Jinna logo and the sphere artwork are trademarks and brand assets of Jinna; the licence does not grant rights to them. See [NOTICE](NOTICE.md) for third-party software and services.
 
-## Usage statistics (private)
+## Usage statistics and request log (private)
 
-The server keeps counters only: page views, distinct visitors per day, checks started and finished, clarifying questions, refusals, limit hits, shares, shared-report opens and spend. No names, requests or IP addresses are stored, and the numbers are not served over HTTP. The operator reads them from the store:
+The server keeps two private things, neither of which is served over HTTP:
+
+- **Counters:** page views, distinct visitors per day, checks started and finished, clarifying questions, refusals, limit hits, shares, shared-report opens and spend.
+- **A request log:** for each request, the time, the visitor's country (from the host's geolocation header), the request as typed, the subject read from it, how it ended, its cost and duration. No IP address is kept. The log holds the newest 5,000 entries and expires 90 days after the last write. The page tells visitors that requests are logged.
+
+The operator reads both from the store:
 
 ```bash
 STORE_DRIVER=redis npx tsx --env-file=.env.local scripts/stats.ts 14
+STORE_DRIVER=redis npx tsx --env-file=.env.local scripts/requests.ts 50
 ```
+
+If you run your own copy for the public, the request log holds personal data (visitors' words about named people): say so in your own privacy notice, or switch it off by removing the `logRequest` call in `server/index.ts`.

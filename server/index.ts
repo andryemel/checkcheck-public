@@ -15,7 +15,7 @@ import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { getStore } from './store';
 import { admit, config, settle } from './limits';
-import { bump, countVisit } from './stats';
+import { bump, countVisit, logRequest } from './stats';
 import { REFUSAL_COPY, screenPurpose } from './checkcheck/purposeScreen';
 import { extractRequest } from './checkcheck/extract';
 import { buildDetailsQuestion, classifyDetailsAnswer, needsDetailsQuestion, parseDetailsAnswer, CHECK_DECLINED_LINE } from './checkcheck/details';
@@ -60,6 +60,12 @@ app.post('/api/visit', (req: Request, res: Response) => {
   res.status(204).end();
 });
 
+/** The visitor's country as the host reports it (Vercel sets x-vercel-ip-country). Never the address. */
+function clientCountry(req: Request): string | null {
+  const raw = String(req.headers['x-vercel-ip-country'] ?? req.headers['cf-ipcountry'] ?? '').trim().toUpperCase();
+  return /^[A-Z]{2}$/.test(raw) ? raw : null;
+}
+
 function clientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown';
 }
@@ -96,12 +102,17 @@ app.post('/api/check', async (req: Request, res: Response) => {
   const text = combinedRequest(request, answer);
   let reserved: number | null = null;
   const lines: CostLine[] = [];
+  // For the private request log (stats.ts): how this request ended and who it was about.
+  const startedAt = Date.now();
+  let outcome = 'error:server';
+  let loggedSubject: { name: string; type: 'person' | 'company' } | null = null;
   try {
     // 1. Purpose (no network, no cost): screening for jobs, tenancies, credit, lawsuits or private life is refused.
     const screen = screenPurpose(text);
     if (screen.refused && screen.reason) {
       send('refused', { reason: screen.reason, message: REFUSAL_COPY[screen.reason] });
       await bump(store, 'refused_purpose');
+      outcome = `refused:${screen.reason}`;
       return end();
     }
     // An answer to "Which X?" that calls the check off.
@@ -109,6 +120,7 @@ app.post('/api/check', async (req: Request, res: Response) => {
     if (answered?.kind === 'declined') {
       send('declined', { message: CHECK_DECLINED_LINE });
       await bump(store, 'declined');
+      outcome = 'declined';
       return end();
     }
     // 2. Limits, before anything is spent.
@@ -116,6 +128,7 @@ app.post('/api/check', async (req: Request, res: Response) => {
     if (!admission.ok) {
       send('limit', { code: admission.code, message: admission.message });
       await bump(store, 'limit_hit');
+      outcome = `limit:${admission.code}`;
       return end();
     }
     reserved = admission.reservedMicro;
@@ -128,9 +141,11 @@ app.post('/api/check', async (req: Request, res: Response) => {
     if (!extracted.subject) {
       send('clarify', { kind: 'subject', question: extracted.problem, cost: { ...totalCost(lines), lines } });
       await bump(store, 'clarify_before_research');
+      outcome = 'clarify:subject';
       return end();
     }
     let subject: CheckSubjectInput = extracted.subject;
+    loggedSubject = { name: subject.name, type: subject.type };
     if (answered?.kind === 'details') {
       const d = parseDetailsAnswer(answer as string);
       subject = {
@@ -145,6 +160,7 @@ app.post('/api/check', async (req: Request, res: Response) => {
     if (!answer && needsDetailsQuestion(subject, null)) {
       send('clarify', { kind: 'details', name: subject.name, question: buildDetailsQuestion(subject.name).replace(' or email address', ', profile link or email address'), cost: { ...totalCost(lines), lines } });
       await bump(store, 'clarify_before_research');
+      outcome = 'clarify:details';
       return end();
     }
 
@@ -164,12 +180,14 @@ app.post('/api/check', async (req: Request, res: Response) => {
     // Kept privately for a day so the visitor can choose to share it; never listed, never indexed.
     if (run.status === 'complete' || run.status === 'partial') await store.setJson(`run:${runId}`, run, config.runTtlSeconds).catch((err) => console.error(`[store] run save failed: ${err instanceof Error ? err.message : err}`));
     await bump(store, run.status === 'complete' ? 'checks_completed' : run.status === 'partial' ? 'checks_partial' : run.status === 'needs_clarification' ? 'clarify_from_research' : 'checks_failed');
+    outcome = run.status === 'failed' ? `failed:${run.stop_reason ?? 'unknown'}` : run.status;
     send('result', { run: forVisitor(run) });
     return end();
   } catch (err: unknown) {
     const kind = err instanceof OpenRouterError ? err.kind : 'server';
     console.error(`[check] failed kind=${kind} ${err instanceof Error ? err.message.slice(0, 200) : ''}`);
     await bump(store, 'errors');
+    outcome = `error:${kind}`;
     send('error', {
       message:
         kind === 'credits' ? 'This demo has run out of research credit for now. Please come back later.'
@@ -179,6 +197,17 @@ app.post('/api/check', async (req: Request, res: Response) => {
     return end();
   } finally {
     clearInterval(beat);
+    await logRequest(store, {
+      at: new Date().toISOString(),
+      country: clientCountry(req),
+      request,
+      answer,
+      status: outcome,
+      subject: loggedSubject?.name ?? null,
+      subject_type: loggedSubject?.type ?? null,
+      cost_usd: totalCost(lines).total_usd,
+      ms: Date.now() - startedAt,
+    });
     if (reserved !== null) {
       const total = totalCost(lines);
       // No model call was made (lines empty) → nothing was spent; otherwise the reported cost replaces the reservation.

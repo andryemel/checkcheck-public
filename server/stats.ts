@@ -1,5 +1,10 @@
 /**
- * Private usage counters. Numbers only: no names, no requests, no IP addresses.
+ * Private usage counters and the private request log.
+ *
+ * Counters are numbers only. The request log (operator decision, 2026-11-10) keeps, for each request
+ * to /api/check: the time, the visitor's country, the request as typed, and how it ended. It never
+ * keeps an IP address. It is capped (newest 5,000 entries) and expires 90 days after the last write.
+ * The page tells visitors that requests are logged.
  *
  * Each event adds one to a per-day counter (kept about 13 months) and to an all-time counter.
  * A unique visitor is counted with a one-day marker keyed by a salted hash of the address; the
@@ -69,4 +74,37 @@ export async function readStats(store: Store, days: number): Promise<{ days: Arr
     list.push({ day, values: await read(day) });
   }
   return { days: list, total: await read('total') };
+}
+
+// ── Request log ────────────────────────────────────────────────────────────────────────────────
+
+export interface RequestLogEntry {
+  at: string;
+  /** Two-letter country code from the host's geolocation header, or null when the host gives none. */
+  country: string | null;
+  request: string;
+  /** The visitor's answer to a clarifying question, when this request carried one. */
+  answer: string | null;
+  /** How it ended: complete, partial, failed:<reason>, needs_clarification, clarify:details, clarify:subject, refused:<reason>, limit:<code>, declined, error:<kind>. */
+  status: string;
+  subject: string | null;
+  subject_type: 'person' | 'company' | null;
+  cost_usd: number | null;
+  ms: number;
+}
+
+const LOG_KEY = 'log:requests';
+const LOG_MAX = 5000;
+const LOG_TTL = 90 * 86_400;
+
+export async function logRequest(store: Store, entry: RequestLogEntry): Promise<void> {
+  try {
+    await store.pushLog(LOG_KEY, entry, LOG_MAX, LOG_TTL);
+  } catch {
+    /* best-effort */
+  }
+}
+
+export async function readRequestLog(store: Store, count: number): Promise<RequestLogEntry[]> {
+  return store.readLog<RequestLogEntry>(LOG_KEY, count);
 }

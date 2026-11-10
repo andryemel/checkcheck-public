@@ -27,6 +27,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <footer className="z-10 px-4 pb-6 pt-8 text-center font-inter text-xs text-[#858481]" style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}>
         <p data-testid="attribution">{ATTRIBUTION}</p>
         <p className="mt-1">Public professional information only. Not a background check for hiring, tenancy, credit or insurance decisions.</p>
+        <p className="mt-1" data-testid="logging-notice">Requests are logged with your country, without your IP address, to run and improve this demo.</p>
       </footer>
     </div>
   );
