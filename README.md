@@ -92,6 +92,7 @@ Other commands:
 ```bash
 npm test         # offline tests of the demo-specific code (no key, no network)
 npm run scan     # pre-publication scan for credentials in publishable files and the built page
+npx tsx --env-file=.env.local scripts/test-store.ts   # store and spending-cap tests against the configured store
 npm run typecheck
 ```
 
@@ -115,13 +116,17 @@ Two separate limits apply to the model call and they fail differently: if the **
 
 ## Deploying
 
-The project is laid out for [Vercel](https://vercel.com) (an Express app exported from `server.ts`, the page built into `public/`, `vercel.json` for the share-page rewrite and headers), based on Vercel's documentation as of November 2026:
+The project is laid out for [Vercel](https://vercel.com):
 
-- Functions may run up to 300 seconds on every plan and can stream with `res.write()`; a check takes about 20 seconds and is abandoned at 150.
-- `express.static()` is ignored on Vercel; static files must be in `public/`.
-- The filesystem is not persistent, so `STORE_DRIVER=redis` is required, with an Upstash-compatible Redis REST URL and token. Counters use `INCRBY`, which is atomic, so the daily caps hold across concurrent requests and instances.
+- the page is built by Vite into `public/` and served as static files;
+- the whole Express app is bundled into one function (`api/index.js` → `dist-server/app.mjs`), and `vercel.json` sends every `/api/*` request to it;
+- `vercel.json` also maps `/r/<id>` to the page and adds the `noindex` header to shared reports.
 
-**Status: not deployed yet.** The Vercel layout and the Redis driver follow the documentation but have not been exercised on a real deployment; expect to adjust them on the first preview.
+Facts from Vercel's documentation (November 2026) that shaped this: functions may run up to 300 seconds on every plan and can stream with `res.write()` (a check takes 10 to 20 seconds and is abandoned at 150); `express.static()` is ignored, so static files must come from `public/`; the filesystem is not persistent.
+
+Storage on any serverless host must be Redis: set `STORE_DRIVER=redis` and either `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` or the `KV_REST_API_URL` / `KV_REST_API_TOKEN` that Vercel's Upstash integration sets. Counters use `INCRBY`, which is atomic.
+
+**Status: verified on a Vercel preview deployment with an Upstash Redis store.** One complete check, its share link, the shared report from a cookie-less request, and the day's counters in Redis were all checked there. `scripts/test-store.ts` exercises the store, including a race of 10 simultaneous requests against room for 3 (exactly 3 are admitted).
 
 ## Limits of this demo
 
@@ -129,12 +134,14 @@ The project is laid out for [Vercel](https://vercel.com) (an Express app exporte
 - It reads public pages. It can be wrong, out of date, or about a different person with the same name. Read the sources.
 - Checks on companies are more reliable than checks on people, because registers and a company's own site anchor the identity.
 - The file store is for one local process. Use Redis anywhere else.
+- Limits are per IP address and per day; a determined visitor with many addresses is stopped by the daily caps and by the credit limit on the key, not by the per-IP limit.
 
 ## Code
 
 ```
 server/
   index.ts              HTTP: /api/check (server-sent events), /api/share, /api/shared/:id
+                        (api/index.js wraps the bundled app as the Vercel function)
   limits.ts  store.ts   caps and persistence (file or Redis)
   checkcheck/
     openrouter.ts       the only model client; one model, no fallback, cost per call

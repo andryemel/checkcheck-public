@@ -109,9 +109,10 @@ export function getStore(): Store {
   if (singleton) return singleton;
   const driver = (process.env.STORE_DRIVER ?? 'file').trim().toLowerCase();
   if (driver === 'redis') {
-    const url = (process.env.UPSTASH_REDIS_REST_URL ?? '').trim();
-    const token = (process.env.UPSTASH_REDIS_REST_TOKEN ?? '').trim();
-    if (!url || !token) throw new Error('STORE_DRIVER=redis needs UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN');
+    // Upstash's own names, or the names Vercel's Marketplace integration sets (KV_REST_API_*).
+    const url = (process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL ?? '').trim();
+    const token = (process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? '').trim();
+    if (!url || !token) throw new Error('STORE_DRIVER=redis needs UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL and KV_REST_API_TOKEN)');
     singleton = new RedisRestStore(url, token);
   } else {
     singleton = new FileStore(path.resolve(process.cwd(), 'data'));
